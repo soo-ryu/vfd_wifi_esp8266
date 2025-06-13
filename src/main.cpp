@@ -98,7 +98,7 @@ void loop()
   String timeDateStr = weekDay + ", " + currentDate + " " + formattedTime;
 
   // Serial.println("");
-  // delay(60000);
+  delay(10000);
 
   if (client)
   {                                // If a new client connects,
