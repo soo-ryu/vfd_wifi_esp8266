@@ -1,221 +1,179 @@
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
-#include <NTPClient.h>
 #include <WiFiUdp.h>
+#include <NTPClient.h>
+#include <vfd_20T201DA2.h>
 
-// Replace with your network credentials
+// WiFi credentials
 const char *ssid = "ELECTRO";
 const char *password = "electroelectro123";
 
-// Define NTP Client to get time
+// NTP
 WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, "pool.ntp.org");
+NTPClient timeClient(ntpUDP, "pool.ntp.org", 7200);
 
-// Week Days
-String weekDays[7] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+// VFD Pins
+const int CLK = 2;
+const int DATA = 4;
+const int RST = 5;
 
-// Month names
-String months[12] = {"January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"};
+vfd_20T201DA2 display(CLK, DATA, RST);
 
-// Set web server port number to 80
+// Web Server
 WiFiServer server(80);
+String header = "";
+String userText = ""; // stores user-submitted text
 
-// Variable to store the HTTP request
-String header;
-
-// Auxiliar variables to store the current output state
-String output5State = "off";
-String output4State = "off";
-
-// Assign output variables to GPIO pins
-const int output5 = 5;
-const int output4 = 4;
-
-// Current time
-unsigned long currentTime = millis();
-// Previous time
-unsigned long previousTime = 0;
-// Define timeout time in milliseconds (example: 2000ms = 2s)
-const long timeoutTime = 2000;
+unsigned long timeoutTime = 2000;
 
 void setup()
 {
   Serial.begin(115200);
-
-  // Initialize the output variables as outputs
-  pinMode(output5, OUTPUT);
-  pinMode(output4, OUTPUT);
-  // Set outputs to LOW
-  digitalWrite(output5, LOW);
-  digitalWrite(output4, LOW);
-
-  // Connect to Wi-Fi network with SSID and password
-  Serial.print("Connecting to ");
-  Serial.println(ssid);
   WiFi.begin(ssid, password);
+
+  Serial.print("Connecting to WiFi");
   while (WiFi.status() != WL_CONNECTED)
   {
     delay(500);
     Serial.print(".");
   }
-  // Print local IP address and start web server
-  Serial.println("");
-  Serial.println("WiFi connected.");
+
+  Serial.println("\nWiFi connected");
   Serial.println("IP address: ");
   Serial.println(WiFi.localIP());
-  server.begin();
 
-  // Initialize a NTPClient to get time
   timeClient.begin();
-  timeClient.setTimeOffset(7200);
+
+  display.begin(20, 2);
+  display.clear();
+  display.writeText("Waiting...");
+  server.begin();
+}
+
+String urlDecode(String input)
+{
+  String decoded = "";
+  char temp[] = "0x00";
+  unsigned int len = input.length();
+  unsigned int i = 0;
+
+  while (i < len)
+  {
+    char c = input.charAt(i);
+    if (c == '+')
+    {
+      decoded += ' ';
+    }
+    else if (c == '%')
+    {
+      if (i + 2 < len)
+      {
+        temp[2] = input.charAt(i + 1);
+        temp[3] = input.charAt(i + 2);
+        decoded += (char)strtol(temp, NULL, 16);
+        i += 2;
+      }
+    }
+    else
+    {
+      decoded += c;
+    }
+    i++;
+  }
+  return decoded;
 }
 
 void loop()
 {
-  WiFiClient client = server.accept(); // Listen for incoming clients
-
   timeClient.update();
+  String formattedTime = timeClient.getFormattedTime();
+  String weekDays[7] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+  String months[12] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
 
   time_t epochTime = timeClient.getEpochTime();
-  String formattedTime = timeClient.getFormattedTime();
-  Serial.println(formattedTime);
-
-  String weekDay = weekDays[timeClient.getDay()];
-  Serial.println(weekDay);
-
-  // Get a time structure
   struct tm *ptm = gmtime((time_t *)&epochTime);
-  int monthDay = ptm->tm_mday;
-  int currentMonth = ptm->tm_mon + 1;
-  String currentMonthName = months[currentMonth - 1];
-  int currentYear = ptm->tm_year + 1900;
 
-  // Print complete date:
-  String currentDate = String(monthDay) + "-" + String(currentMonth) + "-" + String(currentYear);
-  Serial.print("Current date: ");
-  Serial.println(currentDate);
+  int day = ptm->tm_mday;
+  int month = ptm->tm_mon;
+  int year = ptm->tm_year + 1900;
+  int wday = ptm->tm_wday;
 
-  String timeDateStr = weekDay + ", " + currentDate + " " + formattedTime;
+  String dateStr = weekDays[wday] + " " + String(day) + " " + months[month];
 
-  // Serial.println("");
-  delay(10000);
+  // Update VFD every second
+  static unsigned long lastUpdate = 0;
+  if (millis() - lastUpdate > 1000)
+  {
+    lastUpdate = millis();
+    display.clear();
+    display.setCursorPos(0, 0);
+    display.writeText(formattedTime + " " + dateStr); // Line 1
+    display.setCursorPos(0, 1);
+    display.writeText(userText); // Line 2 (user input)
+  }
 
+  WiFiClient client = server.accept();
   if (client)
-  {                                // If a new client connects,
-    Serial.println("New Client."); // print a message out in the serial port
-    String currentLine = "";       // make a String to hold incoming data from the client
-    currentTime = millis();
-    previousTime = currentTime;
+  {
+    Serial.println("New Client.");
+    String currentLine = "";
+    unsigned long currentTime = millis();
+    unsigned long previousTime = currentTime;
+
     while (client.connected() && currentTime - previousTime <= timeoutTime)
-    { // loop while the client's connected
+    {
       currentTime = millis();
       if (client.available())
-      {                         // if there's bytes to read from the client,
-        char c = client.read(); // read a byte, then
-        Serial.write(c);        // print it out the serial monitor
+      {
+        char c = client.read();
         header += c;
+
         if (c == '\n')
-        { // if the byte is a newline character
-          // if the current line is blank, you got two newline characters in a row.
-          // that's the end of the client HTTP request, so send a response:
+        {
           if (currentLine.length() == 0)
           {
-            // HTTP headers always start with a response code (e.g. HTTP/1.1 200 OK)
-            // and a content-type so the client knows what's coming, then a blank line:
+            if (header.indexOf("GET /display?text=") >= 0)
+            {
+              int startIndex = header.indexOf("GET /display?text=") + strlen("GET /display?text=");
+              int endIndex = header.indexOf(" HTTP/");
+              String rawText = header.substring(startIndex, endIndex);
+              userText = urlDecode(rawText);
+              if (userText.length() > 20)
+                userText = userText.substring(0, 20); // limit to one line
+              Serial.println("User text: " + userText);
+            }
+
+            // Webpage Response
             client.println("HTTP/1.1 200 OK");
             client.println("Content-type:text/html");
             client.println("Connection: close");
             client.println();
 
-            // turns the GPIOs on and off
-            if (header.indexOf("GET /5/on") >= 0)
-            {
-              Serial.println("GPIO 5 on");
-              output5State = "on";
-              digitalWrite(output5, HIGH);
-            }
-            else if (header.indexOf("GET /5/off") >= 0)
-            {
-              Serial.println("GPIO 5 off");
-              output5State = "off";
-              digitalWrite(output5, LOW);
-            }
-            else if (header.indexOf("GET /4/on") >= 0)
-            {
-              Serial.println("GPIO 4 on");
-              output4State = "on";
-              digitalWrite(output4, HIGH);
-            }
-            else if (header.indexOf("GET /4/off") >= 0)
-            {
-              Serial.println("GPIO 4 off");
-              output4State = "off";
-              digitalWrite(output4, LOW);
-            }
-
-            // Display the HTML web page
-            client.println("<!DOCTYPE html><html>");
-            client.println("<head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
-            client.println("<link rel=\"icon\" href=\"data:,\">");
-            // CSS to style the on/off buttons
-            // Feel free to change the background-color and font-size attributes to fit your preferences
-            client.println("<style>html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center;}");
-            client.println(".button { background-color: #195B6A; border: none; color: white; padding: 16px 40px;");
-            client.println("text-decoration: none; font-size: 30px; margin: 2px; cursor: pointer;}");
-            client.println(".button2 {background-color: #77878A;}</style></head>");
-
-            // Web Page Heading
-            client.println("<body><h1>ESP8266 Web Server</h1>");
-
-            String timeDateStr = weekDay + ", " + currentDate + " " + formattedTime;
-            client.println(timeDateStr);
-
-            // Display current state, and ON/OFF buttons for GPIO 5
-            client.println("<p>GPIO 5 - State " + output5State + "</p>");
-            // If the output5State is off, it displays the ON button
-            if (output5State == "off")
-            {
-              client.println("<p><a href=\"/5/on\"><button class=\"button\">ON</button></a></p>");
-            }
-            else
-            {
-              client.println("<p><a href=\"/5/off\"><button class=\"button button2\">OFF</button></a></p>");
-            }
-
-            // Display current state, and ON/OFF buttons for GPIO 4
-            client.println("<p>GPIO 4 - State " + output4State + "</p>");
-            // If the output4State is off, it displays the ON button
-            if (output4State == "off")
-            {
-              client.println("<p><a href=\"/4/on\"><button class=\"button\">ON</button></a></p>");
-            }
-            else
-            {
-              client.println("<p><a href=\"/4/off\"><button class=\"button button2\">OFF</button></a></p>");
-            }
+            client.println("<!DOCTYPE html><html><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
+            client.println("<style>html{font-family: Helvetica; text-align: center; margin-top: 50px;}</style></head>");
+            client.println("<body><h2>Send Text to VFD</h2>");
+            client.println("<form action=\"/display\" method=\"GET\">");
+            client.println("<input type=\"text\" name=\"text\" maxlength=\"40\" style=\"font-size:20px; width:60%;\" required>");
+            client.println("<br><br><input type=\"submit\" value=\"Send\" style=\"font-size:20px;\"></form>");
+            client.println("<p>Current text: " + userText + "</p>");
             client.println("</body></html>");
-
-            // The HTTP response ends with another blank line
             client.println();
-            // Break out of the while loop
             break;
           }
           else
-          { // if you got a newline, then clear currentLine
+          {
             currentLine = "";
           }
         }
         else if (c != '\r')
-        {                   // if you got anything else but a carriage return character,
-          currentLine += c; // add it to the end of the currentLine
+        {
+          currentLine += c;
         }
       }
     }
-    // Clear the header variable
+
     header = "";
-    // Close the connection
     client.stop();
     Serial.println("Client disconnected.");
-    Serial.println("");
   }
 }
